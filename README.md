@@ -1,4 +1,4 @@
-# wireGuard-keysmith
+# wireguard-keysmith
 
 This tool brute-forces WireGuard keys to find a public key that matches a given prefix. The primary purpose is to associate keys with a human-readable identifier (e.g., a person's name), similar to how [eschalot](https://github.com/ReclaimYourPrivacy/eschalot) works for Tor onion addresses.
 
