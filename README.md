@@ -26,6 +26,21 @@ You can run the application in one of the following ways:
 # Using Cargo
 cargo run --release -- <Prefix>
 
-# Using the Makefile
-make run ARGS=<Prefix>
+# Using just
+just run <Prefix>
+
+# On an NVIDIA GPU (needs the CUDA toolkit; CUDA_PATH defaults to /opt/cuda)
+cargo run --release --features cuda -- <Prefix>
+just run-cuda <Prefix>
 ```
+
+## How it is fast
+
+Instead of a full scalar multiplication per candidate, each search walks the keys `s, s+8, s+16, …` from a random
+start `s` (stepping by 8 keeps the private key clamped). Around a center point `C` the candidates `C ± i·G`
+(`G = 8·B`, `i = 1..H`) share the denominator of the affine addition, so one batched field inversion gives
+`2H+1` public keys at roughly one multiplication and one squaring each.
+Every match is re-checked with `x25519-dalek` before it is printed.
+
+Rough throughput (Ryzen 7 1700X / RTX 2080 Ti): original approach 0.35 M keys/s, CPU 64 M keys/s, GPU 5 G keys/s.
+Each case-insensitive letter in the prefix multiplies the expected work by 32, other characters by 64.

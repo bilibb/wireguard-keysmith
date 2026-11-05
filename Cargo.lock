@@ -7,8 +7,8 @@ name = "WireGuard-Keysmith"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "fiat-crypto",
  "rand",
- "rand_chacha",
  "rayon",
  "x25519-dalek",
 ]
