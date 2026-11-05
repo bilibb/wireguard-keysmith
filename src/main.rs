@@ -10,6 +10,7 @@ use std::time::Instant;
 use x25519_dalek::{PublicKey, StaticSecret, X25519_BASEPOINT_BYTES, x25519};
 
 type Fe = fiat_25519_tight_field_element;
+type Loose = fiat_25519_loose_field_element;
 type Point = (Fe, Fe);
 
 /// Half-width of a batch: per center C the keys C and C ± i·G (i = 1..=H) are checked, G = 8·B.
@@ -27,6 +28,7 @@ const V_8B: [u8; 32] = [
     0x73, 0x4f, 0x99, 0xbf, 0x96, 0xbb, 0x30, 0x72, 0x1b, 0xc6, 0x46, 0x70, 0x45, 0x44, 0x7a, 0x1f,
 ];
 const ONE: Fe = fiat_25519_tight_field_element([1, 0, 0, 0, 0]);
+const ZERO: Fe = fiat_25519_tight_field_element([0; 5]);
 const A: Fe = fiat_25519_tight_field_element([486662, 0, 0, 0, 0]); // curve v² = u³ + A·u² + u
 
 fn fe(bytes: &[u8; 32]) -> Fe {
@@ -54,18 +56,38 @@ fn square(a: &Fe) -> Fe {
     out
 }
 
-fn add(a: &Fe, b: &Fe) -> Fe {
-    let (mut l, mut out) = (fiat_25519_loose_field_element([0; 5]), ONE);
-    fiat_25519_add(&mut l, a, b);
-    fiat_25519_carry(&mut out, &l);
+// add/sub results may stay loose when they only feed carry_mul (which takes loose inputs).
+fn add_loose(a: &Fe, b: &Fe) -> Loose {
+    let mut out = fiat_25519_loose_field_element([0; 5]);
+    fiat_25519_add(&mut out, a, b);
     out
 }
 
-fn sub(a: &Fe, b: &Fe) -> Fe {
-    let (mut l, mut out) = (fiat_25519_loose_field_element([0; 5]), ONE);
-    fiat_25519_sub(&mut l, a, b);
-    fiat_25519_carry(&mut out, &l);
+fn sub_loose(a: &Fe, b: &Fe) -> Loose {
+    let mut out = fiat_25519_loose_field_element([0; 5]);
+    fiat_25519_sub(&mut out, a, b);
     out
+}
+
+fn mul_loose(a: &Loose, b: &Fe) -> Fe {
+    let (mut lb, mut out) = (fiat_25519_loose_field_element([0; 5]), ONE);
+    fiat_25519_relax(&mut lb, b);
+    fiat_25519_carry_mul(&mut out, a, &lb);
+    out
+}
+
+fn carry(a: &Loose) -> Fe {
+    let mut out = ONE;
+    fiat_25519_carry(&mut out, a);
+    out
+}
+
+fn add(a: &Fe, b: &Fe) -> Fe {
+    carry(&add_loose(a, b))
+}
+
+fn sub(a: &Fe, b: &Fe) -> Fe {
+    carry(&sub_loose(a, b))
 }
 
 fn invert(a: &Fe) -> Fe {
@@ -140,9 +162,18 @@ fn to_bytes(x: &Fe) -> [u8; 32] {
     out
 }
 
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Exact pre-filter on the first base64 char without reducing x: every fiat representative is
+/// < 4p, so the canonical low byte is (x mod 256) - e·0xed for some e in 0..4 (p ≡ 0xed mod 256).
+fn first_char_maybe(x: &Loose, c: u8) -> bool {
+    let b = x.0[0] as u8;
+    (0..4u8)
+        .any(|e| B64[(b.wrapping_sub(e.wrapping_mul(0xed)) >> 2) as usize].eq_ignore_ascii_case(&c))
+}
+
 fn matches(public: &[u8; 32], prefix: &[u8]) -> bool {
     // Cheap reject on the first char (top 6 bits of byte 0) before base64-encoding everything.
-    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     if !B64[(public[0] >> 2) as usize].eq_ignore_ascii_case(&prefix[0]) {
         return false;
     }
@@ -157,17 +188,20 @@ fn matches(public: &[u8; 32], prefix: &[u8]) -> bool {
 fn search(s: [u8; 32], prefix: &[u8], t: &[Point]) -> Option<[u8; 32]> {
     let mut c = point(s, H as u64);
     let mut acc = vec![ONE; H + 1];
-    let check = |x: &Fe, i: u64| matches(&to_bytes(x), prefix).then(|| nth_key(s, i));
+    let check = |x: &Loose, i: u64| {
+        (first_char_maybe(x, prefix[0]) && matches(&to_bytes(&carry(x)), prefix))
+            .then(|| nth_key(s, i))
+    };
 
     for k in 0..CENTERS {
         let (xc, yc) = c;
         let center = k * SPAN + H as u64;
-        if let Some(key) = check(&xc, center) {
+        if let Some(key) = check(&add_loose(&xc, &ZERO), center) {
             return Some(key);
         }
         let mut prod = ONE;
         for (a, ti) in acc.iter_mut().zip(t) {
-            prod = mul(&prod, &sub(&ti.0, &xc));
+            prod = mul_loose(&sub_loose(&ti.0, &xc), &prod);
             *a = prod;
         }
         let mut inv = invert(&prod);
@@ -180,11 +214,11 @@ fn search(s: [u8; 32], prefix: &[u8], t: &[Point]) -> Option<[u8; 32]> {
         let a_xc = add(&A, &xc);
         for i in (0..H).rev() {
             let d_inv = if i == 0 { inv } else { mul(&inv, &acc[i - 1]) };
-            inv = mul(&inv, &sub(&t[i].0, &xc));
+            inv = mul_loose(&sub_loose(&t[i].0, &xc), &inv);
             let s_x = add(&a_xc, &t[i].0);
             // C + T[i]: λ = (yT - yC)/d; C - T[i]: λ = -(yT + yC)/d (sign vanishes in λ²)
-            let x_plus = sub(&square(&mul(&sub(&t[i].1, &yc), &d_inv)), &s_x);
-            let x_minus = sub(&square(&mul(&add(&t[i].1, &yc), &d_inv)), &s_x);
+            let x_plus = sub_loose(&square(&mul_loose(&sub_loose(&t[i].1, &yc), &d_inv)), &s_x);
+            let x_minus = sub_loose(&square(&mul_loose(&add_loose(&t[i].1, &yc), &d_inv)), &s_x);
             let off = i as u64 + 1;
             if let Some(key) =
                 check(&x_plus, center + off).or_else(|| check(&x_minus, center - off))
@@ -322,6 +356,27 @@ mod tests {
             let key = nth_key(s, i);
             let b64 = STANDARD.encode(x25519(key, X25519_BASEPOINT_BYTES));
             assert_eq!(search(s, &b64.as_bytes()[..43], &t), Some(key), "key {i}");
+        }
+    }
+
+    #[test]
+    fn first_char_gate_never_rejects_a_match() {
+        let max = fiat_25519_tight_field_element([1 << 51; 5]);
+        let mut xs = vec![
+            add_loose(&max, &max),
+            sub_loose(&ZERO, &max),
+            sub_loose(&max, &ZERO),
+        ];
+        for _ in 0..100_000 {
+            let mut r: [[u8; 32]; 2] = rand::random();
+            r[0][31] &= 0x7f;
+            r[1][31] &= 0x7f;
+            let (a, b) = (fe(&r[0]), fe(&r[1]));
+            xs.extend([add_loose(&a, &b), sub_loose(&a, &b), sub_loose(&b, &a)]);
+        }
+        for x in &xs {
+            let first = B64[(to_bytes(&carry(x))[0] >> 2) as usize];
+            assert!(first_char_maybe(x, first), "{:?}", x.0);
         }
     }
 }

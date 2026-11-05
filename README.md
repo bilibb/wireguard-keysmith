@@ -42,5 +42,6 @@ start `s` (stepping by 8 keeps the private key clamped). Around a center point `
 `2H+1` public keys at roughly one multiplication and one squaring each.
 Every match is re-checked with `x25519-dalek` before it is printed.
 
-Rough throughput (Ryzen 7 1700X / RTX 2080 Ti): original approach 0.35 M keys/s, CPU 64 M keys/s, GPU 5 G keys/s.
+Rough throughput (Ryzen 7 1700X / RTX 2080 Ti): original approach 0.35 M keys/s, CPU 75 M keys/s, GPU 5.3 G keys/s.
+Builds use `target-cpu=native` (`.cargo/config.toml`), so a binary may not run on a different CPU.
 Each case-insensitive letter in the prefix multiplies the expected work by 32, other characters by 64.

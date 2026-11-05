@@ -131,7 +131,7 @@ __device__ __forceinline__ void check(fe u, uint32_t t, uint64_t j, ks_hit *hits
     }
 }
 
-__global__ void __launch_bounds__(256) ks_kernel(fe *cx, fe *cy, uint32_t n, uint32_t centers, uint64_t base,
+__global__ void __launch_bounds__(256, 1) ks_kernel(fe *cx, fe *cy, uint32_t n, uint32_t centers, uint64_t base,
                                                  ks_hit *hits, uint32_t *nhits, uint32_t max_hits) {
     uint32_t t = blockIdx.x * blockDim.x + threadIdx.x;
     if (t >= n) return;

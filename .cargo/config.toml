@@ -1,0 +1,3 @@
+# Tuned for the building CPU (~8% faster field arithmetic); the binary may not run on older CPUs.
+[build]
+rustflags = ["-C", "target-cpu=native"]
